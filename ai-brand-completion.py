@@ -2,12 +2,11 @@
 import streamlit as st
 import pandas as pd
 import openai
-import requests
 
-st.title("メーカー・ブランド補完ツール（AI＋検索）")
+# v1.x 以降のクライアント初期化
+client = openai.OpenAI(api_key=st.secrets["openai_api_key"])
 
-# ユーザーのAPIキー（st.secretsなどで安全に管理すべき）
-openai.api_key = st.secrets["openai_api_key"]
+st.title("メーカー・ブランド補完ツール（GPT-4o＋Streamlit）")
 
 uploaded_file = st.file_uploader("AI補完対象ファイル（CSV）をアップロードしてください", type=["csv"])
 
@@ -33,7 +32,7 @@ JANコード：{row['JANコード']}
         """
 
         try:
-            response = openai.ChatCompletion.create(
+            response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": "あなたは商品分類の専門家です。正確性を重視して、あいまいな場合は無理に推定せず空欄を維持してください。"},
