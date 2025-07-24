@@ -15,9 +15,9 @@ EXCLUDE_PATH = st.secrets["exclude_path"]
 
 client = openai.OpenAI(api_key=openai.api_key)
 st.set_page_config(layout="wide")
-st.title("🧠 メーカー・ブランド補完ツール（整合性チェック付き）")
+st.title("🧠 メーカー・ブランド補完ツール（整合性＋除外管理）")
 
-# === 除外ドメイン読み込み ===
+# === GitHub除外ドメイン読み込み ===
 @st.cache_data
 def load_exclude_list_from_github():
     url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{EXCLUDE_PATH}"
@@ -28,13 +28,49 @@ def load_exclude_list_from_github():
         st.warning(f"❌ 除外ドメインの読み込みに失敗しました: {e}")
         return []
 
-exclude_list = load_exclude_list_from_github()
+def upload_to_github(content_str: str):
+    get_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{EXCLUDE_PATH}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+    sha = None
+    try:
+        res = requests.get(get_url, headers=headers)
+        if res.status_code == 200:
+            sha = res.json().get("sha")
+    except:
+        pass
 
-# === サイドバー：除外リスト表示
+    encoded = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+    payload = {
+        "message": "更新: 除外ドメインリスト",
+        "content": encoded,
+        "branch": "main"
+    }
+    if sha:
+        payload["sha"] = sha
+
+    put_res = requests.put(get_url, headers=headers, json=payload)
+    return put_res.status_code, put_res.json()
+
+# === サイドバー：除外リスト管理 ===
 st.sidebar.header("🛡 除外ドメイン管理")
+exclude_list = load_exclude_list_from_github()
 st.sidebar.code("\n".join(exclude_list) or "（除外リストなし）")
 
-# === サイドバー：ブランドマスタCSVアップロード
+uploaded_exclude = st.sidebar.file_uploader("📤 除外ドメインリスト（CSV）", type=["csv"])
+if uploaded_exclude:
+    content = uploaded_exclude.getvalue().decode("utf-8")
+    if st.sidebar.button("🚀 GitHubへ保存"):
+        status, resp = upload_to_github(content)
+        if status in (200, 201):
+            st.sidebar.success("✅ 保存成功。リロードで反映されます")
+            st.cache_data.clear()
+        else:
+            st.sidebar.error(f"❌ 保存失敗: {resp}")
+
+# === サイドバー：ブランドマスタアップロード ===
 st.sidebar.header("📘 ブランドマスタアップロード")
 uploaded_master = st.sidebar.file_uploader("ブランドマスタ（CSV）", type=["csv"])
 brand_master_dict = {}
@@ -49,46 +85,93 @@ if uploaded_master:
         st.sidebar.success(f"✅ マスタ読み込み成功：{len(brand_master_dict)}件")
     except Exception as e:
         st.sidebar.error(f"❌ マスタ読み込みエラー: {e}")
-# === ユーティリティ関数群 ===
-def google_search(query, exclude_domains):
-    url = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "key": GOOGLE_API_KEY,
-        "cx": GOOGLE_CX,
-        "q": query,
-        "num": 5,
-        "lr": "lang_ja"
-    }
+import streamlit as st
+import pandas as pd
+import openai
+import requests
+import base64
+import re
+
+# === Secrets ===
+openai.api_key = st.secrets["openai_api_key"]
+GOOGLE_API_KEY = st.secrets["google_api_key"]
+GOOGLE_CX = st.secrets["google_cse_id"]
+GITHUB_TOKEN = st.secrets["github_token"]
+GITHUB_REPO = st.secrets["github_repo"]
+EXCLUDE_PATH = st.secrets["exclude_path"]
+
+client = openai.OpenAI(api_key=openai.api_key)
+st.set_page_config(layout="wide")
+st.title("🧠 メーカー・ブランド補完ツール（整合性＋除外管理）")
+
+# === GitHub除外ドメイン読み込み ===
+@st.cache_data
+def load_exclude_list_from_github():
+    url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{EXCLUDE_PATH}"
     try:
-        res = requests.get(url, params=params, timeout=15)
-        res.raise_for_status()
-        data = res.json()
-        results, urls = [], []
-        for item in data.get("items", []):
-            link = item.get("link", "")
-            if any(x in link for x in exclude_domains):
-                continue
-            title = item.get("title", "")
-            snippet = item.get("snippet", "")
-            results.append(f"{title}\n{snippet}\n{link}")
-            urls.append(link)
-        return "\n\n".join(results), ", ".join(urls[:3])
+        df = pd.read_csv(url)
+        return df.iloc[:, 0].dropna().tolist()
     except Exception as e:
-        return f"[GoogleSearchError] {e}", ""
+        st.warning(f"❌ 除外ドメインの読み込みに失敗しました: {e}")
+        return []
 
-def get_safe(row, col):
-    return row[col] if col in row and pd.notnull(row[col]) else ""
+def upload_to_github(content_str: str):
+    get_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{EXCLUDE_PATH}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+    sha = None
+    try:
+        res = requests.get(get_url, headers=headers)
+        if res.status_code == 200:
+            sha = res.json().get("sha")
+    except:
+        pass
 
-def parse_gpt_output(text):
-    brand, maker, reason = "", "", ""
-    for line in text.splitlines():
-        b = re.match(r"^\s*(ブランド名|ブランド|ﾌﾞﾗﾝﾄﾞ)[：:]\s*(.*)$", line)
-        m = re.match(r"^\s*(メーカー名|メーカー|ﾒｰｶｰ)[：:]\s*(.*)$", line)
-        r = re.match(r"^\s*(理由|補足|根拠)[：:]\s*(.*)$", line)
-        if b: brand = b.group(2).strip()
-        elif m: maker = m.group(2).strip()
-        elif r: reason = r.group(2).strip()
-    return brand, maker, reason
+    encoded = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+    payload = {
+        "message": "更新: 除外ドメインリスト",
+        "content": encoded,
+        "branch": "main"
+    }
+    if sha:
+        payload["sha"] = sha
+
+    put_res = requests.put(get_url, headers=headers, json=payload)
+    return put_res.status_code, put_res.json()
+
+# === サイドバー：除外リスト管理 ===
+st.sidebar.header("🛡 除外ドメイン管理")
+exclude_list = load_exclude_list_from_github()
+st.sidebar.code("\n".join(exclude_list) or "（除外リストなし）")
+
+uploaded_exclude = st.sidebar.file_uploader("📤 除外ドメインリスト（CSV）", type=["csv"])
+if uploaded_exclude:
+    content = uploaded_exclude.getvalue().decode("utf-8")
+    if st.sidebar.button("🚀 GitHubへ保存"):
+        status, resp = upload_to_github(content)
+        if status in (200, 201):
+            st.sidebar.success("✅ 保存成功。リロードで反映されます")
+            st.cache_data.clear()
+        else:
+            st.sidebar.error(f"❌ 保存失敗: {resp}")
+
+# === サイドバー：ブランドマスタアップロード ===
+st.sidebar.header("📘 ブランドマスタアップロード")
+uploaded_master = st.sidebar.file_uploader("ブランドマスタ（CSV）", type=["csv"])
+brand_master_dict = {}
+if uploaded_master:
+    try:
+        df_master = pd.read_csv(uploaded_master, dtype=str).fillna("")
+        for _, row in df_master.iterrows():
+            brand = row.get("ブランド名", "").strip()
+            maker = row.get("メーカー名", "").strip()
+            if brand:
+                brand_master_dict[brand] = maker
+        st.sidebar.success(f"✅ マスタ読み込み成功：{len(brand_master_dict)}件")
+    except Exception as e:
+        st.sidebar.error(f"❌ マスタ読み込みエラー: {e}")
 uploaded_file = st.file_uploader("📄 AI補完対象ファイル（CSV）", type=["csv"])
 
 if st.button("🔄 リセット"):
@@ -154,7 +237,7 @@ if uploaded_file and "result_df" not in st.session_state:
             summary, urls = "", ""
             err_rows.append(row.to_dict())
 
-        # === 整合性チェック ===
+        # 整合性チェック
         master_maker = brand_master_dict.get(brand, "")
         match_flag = ""
         if brand:
@@ -186,6 +269,9 @@ if uploaded_file and "result_df" not in st.session_state:
     st.session_state.error_df = pd.DataFrame(err_rows)
 # === ダウンロード出力 ===
 if "result_df" in st.session_state:
+    st.markdown("### ✅ 補完結果")
+    st.dataframe(st.session_state.result_df, use_container_width=True)
+
     st.download_button(
         "📥 補完結果CSVをダウンロード",
         st.session_state.result_df.to_csv(index=False).encode("utf-8-sig"),
@@ -194,7 +280,9 @@ if "result_df" in st.session_state:
     )
 
 if "error_df" in st.session_state and not st.session_state.error_df.empty:
-    st.warning(f"⚠️ エラー行数: {len(st.session_state.error_df)} 件")
+    st.markdown("### ⚠️ エラー発生行")
+    st.dataframe(st.session_state.error_df, use_container_width=True)
+
     st.download_button(
         "⚠️ エラー行CSVをダウンロード",
         st.session_state.error_df.to_csv(index=False).encode("utf-8-sig"),
