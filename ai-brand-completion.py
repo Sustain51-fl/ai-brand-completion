@@ -15,7 +15,7 @@ EXCLUDE_PATH = st.secrets["exclude_path"]
 
 client = openai.OpenAI(api_key=openai.api_key)
 st.set_page_config(layout="wide")
-st.title("🧠 メーカー・ブランド補完ツール（整合性＋除外管理）")
+st.title("\U0001f9e0 メーカー・ブランド補完ツール（コード整合性対応）")
 
 # === GitHub除外ドメイン読み込み ===
 @st.cache_data
@@ -55,14 +55,14 @@ def upload_to_github(content_str: str):
     return put_res.status_code, put_res.json()
 
 # === サイドバー：除外リスト管理 ===
-st.sidebar.header("🛡 除外ドメイン管理")
+st.sidebar.header("\U0001f6e1 除外ドメイン管理")
 exclude_list = load_exclude_list_from_github()
 st.sidebar.code("\n".join(exclude_list) or "（除外リストなし）")
 
-uploaded_exclude = st.sidebar.file_uploader("📤 除外ドメインリスト（CSV）", type=["csv"])
+uploaded_exclude = st.sidebar.file_uploader("\U0001f4e4 除外ドメインリスト（CSV）", type=["csv"])
 if uploaded_exclude:
     content = uploaded_exclude.getvalue().decode("utf-8")
-    if st.sidebar.button("🚀 GitHubへ保存"):
+    if st.sidebar.button("\U0001f680 GitHubへ保存"):
         status, resp = upload_to_github(content)
         if status in (200, 201):
             st.sidebar.success("✅ 保存成功。リロードで反映されます")
@@ -70,22 +70,27 @@ if uploaded_exclude:
         else:
             st.sidebar.error(f"❌ 保存失敗: {resp}")
 
-# === サイドバー：ブランドマスタアップロード ===
-st.sidebar.header("📘 ブランドマスタアップロード")
+# === サイドバー：ブランド・メーカーコード付きマスタ読込 ===
+st.sidebar.header("\U0001f4d8 コード付きマスタアップロード")
 uploaded_master = st.sidebar.file_uploader("ブランドマスタ（CSV）", type=["csv"])
-brand_master_dict = {}
+brand_dict = {}
 if uploaded_master:
     try:
         df_master = pd.read_csv(uploaded_master, dtype=str).fillna("")
+        valid_rows = 0
         for _, row in df_master.iterrows():
             brand = row.get("ブランド名", "").strip()
-            maker = row.get("メーカー名", "").strip()
-            if brand:
-                brand_master_dict[brand] = maker
-        st.sidebar.success(f"✅ マスタ読み込み成功：{len(brand_master_dict)}件")
+            if not brand:
+                continue
+            bcd = row.get("ブランドコード", "").strip()
+            mcd = row.get("メーカーコード", "").strip()
+            mkr = row.get("メーカー名", "").strip()
+            brand_dict[brand] = (bcd, mcd, mkr)
+            valid_rows += 1
+        st.sidebar.success(f"✅ 読み込み成功（有効ブランド数: {valid_rows}）")
     except Exception as e:
         st.sidebar.error(f"❌ マスタ読み込みエラー: {e}")
-# === ユーティリティ関数群 ===
+
 def google_search(query, exclude_domains):
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
@@ -103,7 +108,7 @@ def google_search(query, exclude_domains):
         for item in data.get("items", []):
             link = item.get("link", "")
             if any(x in link for x in exclude_domains):
-                continue  # ← 除外ドメイン処理ここ！
+                continue
             title = item.get("title", "")
             snippet = item.get("snippet", "")
             results.append(f"{title}\n{snippet}\n{link}")
@@ -125,14 +130,20 @@ def parse_gpt_output(text):
         elif m: maker = m.group(2).strip()
         elif r: reason = r.group(2).strip()
     return brand, maker, reason
-uploaded_file = st.file_uploader("📄 AI補完対象ファイル（CSV）", type=["csv"])
 
-if st.button("🔄 リセット"):
+uploaded_file = st.file_uploader("\U0001f4c4 AI補完対象ファイル（CSV）", type=["csv"])
+
+if st.button("\U0001f504 リセット"):
     st.session_state.pop("result_df", None)
     st.session_state.pop("error_df", None)
     st.experimental_rerun()
 
 if uploaded_file and "result_df" not in st.session_state:
+
+    if not brand_dict:
+        st.error("⚠️ ブランド・メーカーのマスタCSVをアップロードしてください。")
+        st.stop()
+
     df = pd.read_csv(uploaded_file, dtype=str).fillna("")
     st.write("アップロードされたデータ", df)
 
@@ -142,7 +153,7 @@ if uploaded_file and "result_df" not in st.session_state:
         st.stop()
 
     b_list, m_list, r_list, q_list, s_list, u_list = [], [], [], [], [], []
-    master_maker_list, match_flag_list = [], []
+    bcd_list, mcd_list, mmk_list, match_flag_list = [], [], [], []
     err_rows = []
 
     progress = st.progress(0)
@@ -178,7 +189,14 @@ if uploaded_file and "result_df" not in st.session_state:
             res = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "あなたは商品分類の専門家です。ブランドとメーカーは必ず正しく対応させてください。"},
+                    {"role": "system", "content": (
+                        "あなたは商品分類の専門家です。以下のルールに従って、ブランド名とメーカー名を正しく推定してください：\n"
+                        "- ブランドは製品名やサービス名を指し、必ずいずれかのメーカーに属している。\n"
+                        "- メーカーは製造・販売元であり、ブランドを保有する企業名です。\n"
+                        "- 色名・カテゴリ・素材（例：ホワイト、紙、洗剤等）はブランドとみなしてはいけません。\n"
+                        "- ブランドが不明な場合は『ブランド：該当なし』としてください。\n"
+                        "ブランドとメーカーは正確に対応させてください。"
+                    )},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3
@@ -190,23 +208,20 @@ if uploaded_file and "result_df" not in st.session_state:
             summary, urls = "", ""
             err_rows.append(row.to_dict())
 
-        # 整合性チェック
-        master_maker = brand_master_dict.get(brand, "")
-        match_flag = ""
-        if brand:
-            if master_maker:
-                match_flag = "✅" if maker == master_maker else "❌"
-            else:
-                match_flag = "（マスタなし）"
+        if brand in brand_dict:
+            bcd, mcd, mmk = brand_dict[brand]
+            match_flag = "✅" if maker == mmk else "❌"
         else:
-            match_flag = "（ブランドなし）"
+            bcd, mcd, mmk, match_flag = "", "", "", "（マスタなし）"
 
         b_list.append(brand)
         m_list.append(maker)
         r_list.append(reason)
         s_list.append(summary[:300])
         u_list.append(urls)
-        master_maker_list.append(master_maker)
+        bcd_list.append(bcd)
+        mcd_list.append(mcd)
+        mmk_list.append(mmk)
         match_flag_list.append(match_flag)
 
     df["検索クエリ"] = q_list
@@ -215,20 +230,22 @@ if uploaded_file and "result_df" not in st.session_state:
     df["AI_理由"] = r_list
     df["検索サマリ"] = s_list
     df["参照URL"] = u_list
-    df["マスタ正式メーカー"] = master_maker_list
+    df["ブランドコード"] = bcd_list
+    df["メーカーコード"] = mcd_list
+    df["マスタメーカー名"] = mmk_list
     df["ブランド⇄メーカー整合性"] = match_flag_list
 
     st.session_state.result_df = df
     st.session_state.error_df = pd.DataFrame(err_rows)
-# === ダウンロード出力 ===
+
 if "result_df" in st.session_state:
     st.markdown("### ✅ 補完結果")
     st.dataframe(st.session_state.result_df, use_container_width=True)
 
     st.download_button(
-        "📥 補完結果CSVをダウンロード",
+        "\U0001f4e5 補完結果CSVをダウンロード",
         st.session_state.result_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="AI補完結果_整合性付き.csv",
+        file_name="AI補完結果_コード対応.csv",
         mime="text/csv"
     )
 
