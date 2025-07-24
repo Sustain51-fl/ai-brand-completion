@@ -16,9 +16,9 @@ EXCLUDE_PATH = st.secrets["exclude_path"]
 client = openai.OpenAI(api_key=openai.api_key)
 
 st.set_page_config(layout="wide")
-st.title("🧠 メーカー・ブランド補完ツール（再処理防止＋リセット対応）")
+st.title("🧠 メーカー・ブランド補完ツール（完全版）")
 
-# === 除外リストの読み込み（GitHubからrawで）
+# === GitHubから除外ドメインリストを読み込み ===
 @st.cache_data
 def load_exclude_list_from_github():
     url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{EXCLUDE_PATH}"
@@ -29,6 +29,54 @@ def load_exclude_list_from_github():
         st.warning(f"❌ 除外ドメインの読み込みに失敗しました: {e}")
         return []
 
+# === 除外リストをGitHubに保存 ===
+def upload_to_github(content_str: str):
+    get_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{EXCLUDE_PATH}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    # 現在のSHAを取得（上書き保存のために必要）
+    sha = None
+    try:
+        res = requests.get(get_url, headers=headers)
+        if res.status_code == 200:
+            sha = res.json().get("sha")
+    except:
+        pass
+
+    encoded = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+    payload = {
+        "message": "更新: 除外ドメインリスト",
+        "content": encoded,
+        "branch": "main"
+    }
+    if sha:
+        payload["sha"] = sha
+
+    put_res = requests.put(get_url, headers=headers, json=payload)
+    return put_res.status_code, put_res.json()
+
+# === サイドバー：除外リスト管理 ===
+st.sidebar.header("🛡 除外ドメイン管理")
+
+exclude_list = load_exclude_list_from_github()
+st.sidebar.write("📋 現在の除外リスト:")
+st.sidebar.code("\n".join(exclude_list) or "（リストなし）")
+
+uploaded_exclude = st.sidebar.file_uploader("📤 新しい除外リストCSV", type=["csv"])
+if uploaded_exclude:
+    content = uploaded_exclude.getvalue().decode("utf-8")
+    if st.sidebar.button("🚀 GitHubへ保存"):
+        status, resp = upload_to_github(content)
+        if status in (200, 201):
+            st.sidebar.success("✅ 保存成功。リロードで反映されます")
+            st.cache_data.clear()
+        else:
+            st.sidebar.error(f"❌ 保存失敗: {resp}")
+
+# === GPT補完処理 ===
 def google_search(query, exclude_domains):
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
@@ -69,7 +117,7 @@ def parse_gpt_output(text):
         elif r: reason = r.group(2).strip()
     return brand, maker, reason
 
-# === UI: ファイルアップロード＋リセットボタン
+# === メインUI：ファイルアップロード＋リセットボタン ===
 uploaded_file = st.file_uploader("📄 AI補完対象ファイル（CSV）", type=["csv"])
 
 if st.button("🔄 リセット"):
@@ -77,7 +125,7 @@ if st.button("🔄 リセット"):
     st.session_state.pop("error_df", None)
     st.experimental_rerun()
 
-# === 初回処理 or セッションに結果があれば表示
+# === 初回処理 or セッションにデータがあれば表示 ===
 if uploaded_file and "result_df" not in st.session_state:
     df = pd.read_csv(uploaded_file, dtype=str).fillna("")
     st.write("アップロードされたデータ", df)
@@ -86,8 +134,6 @@ if uploaded_file and "result_df" not in st.session_state:
     if not all(c in df.columns for c in required):
         st.error(f"必要列が不足: {set(required) - set(df.columns)}")
         st.stop()
-
-    exclude_list = load_exclude_list_from_github()
 
     b_list, m_list, r_list, q_list, s_list, u_list, err_rows = [], [], [], [], [], [], []
     progress = st.progress(0)
@@ -151,7 +197,7 @@ if uploaded_file and "result_df" not in st.session_state:
     st.session_state.result_df = df
     st.session_state.error_df = pd.DataFrame(err_rows)
 
-# === 出力：セッションに保持されたデータからダウンロード
+# === ダウンロード出力 ===
 if "result_df" in st.session_state:
     st.download_button(
         "📥 補完結果CSVをダウンロード",
