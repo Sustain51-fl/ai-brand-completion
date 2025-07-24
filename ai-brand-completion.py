@@ -16,9 +16,9 @@ EXCLUDE_PATH = st.secrets["exclude_path"]
 client = openai.OpenAI(api_key=openai.api_key)
 
 st.set_page_config(layout="wide")
-st.title("🧠 メーカー・ブランド補完ツール（除外管理統合版）")
+st.title("🧠 メーカー・ブランド補完ツール（再処理防止＋リセット対応）")
 
-# === GitHub除外ドメイン管理 ===
+# === 除外リストの読み込み（GitHubからrawで）
 @st.cache_data
 def load_exclude_list_from_github():
     url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{EXCLUDE_PATH}"
@@ -29,34 +29,6 @@ def load_exclude_list_from_github():
         st.warning(f"❌ 除外ドメインの読み込みに失敗しました: {e}")
         return []
 
-def upload_to_github(content_str: str):
-    get_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{EXCLUDE_PATH}"
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    }
-
-    sha = None
-    try:
-        res = requests.get(get_url, headers=headers)
-        if res.status_code == 200:
-            sha = res.json().get("sha")
-    except:
-        pass
-
-    encoded = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
-    payload = {
-        "message": "更新: 除外ドメインリスト",
-        "content": encoded,
-        "branch": "main"
-    }
-    if sha:
-        payload["sha"] = sha
-
-    put_res = requests.put(get_url, headers=headers, json=payload)
-    return put_res.status_code, put_res.json()
-
-# === Google検索（除外適用） ===
 def google_search(query, exclude_domains):
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
@@ -97,27 +69,16 @@ def parse_gpt_output(text):
         elif r: reason = r.group(2).strip()
     return brand, maker, reason
 
-# === サイドバー：除外ドメイン管理 ===
-st.sidebar.header("🛡 除外ドメイン管理")
-
-exclude_list = load_exclude_list_from_github()
-st.sidebar.write("現在の除外リスト:")
-st.sidebar.code("\n".join(exclude_list) or "（なし）")
-
-uploaded_exclude = st.sidebar.file_uploader("📤 新しい除外リストCSV", type=["csv"])
-if uploaded_exclude:
-    content = uploaded_exclude.getvalue().decode("utf-8")
-    if st.sidebar.button("🚀 GitHubへ保存"):
-        status, resp = upload_to_github(content)
-        if status in (200, 201):
-            st.sidebar.success("保存成功。リロードで反映されます")
-            st.cache_data.clear()
-        else:
-            st.sidebar.error(f"保存失敗: {resp}")
-
-# === メイン処理：ブランド補完 ===
+# === UI: ファイルアップロード＋リセットボタン
 uploaded_file = st.file_uploader("📄 AI補完対象ファイル（CSV）", type=["csv"])
-if uploaded_file:
+
+if st.button("🔄 リセット"):
+    st.session_state.pop("result_df", None)
+    st.session_state.pop("error_df", None)
+    st.experimental_rerun()
+
+# === 初回処理 or セッションに結果があれば表示
+if uploaded_file and "result_df" not in st.session_state:
     df = pd.read_csv(uploaded_file, dtype=str).fillna("")
     st.write("アップロードされたデータ", df)
 
@@ -125,6 +86,8 @@ if uploaded_file:
     if not all(c in df.columns for c in required):
         st.error(f"必要列が不足: {set(required) - set(df.columns)}")
         st.stop()
+
+    exclude_list = load_exclude_list_from_github()
 
     b_list, m_list, r_list, q_list, s_list, u_list, err_rows = [], [], [], [], [], [], []
     progress = st.progress(0)
@@ -185,11 +148,23 @@ if uploaded_file:
     df["検索サマリ"] = s_list
     df["参照URL"] = u_list
 
-    st.download_button("📥 補完結果CSVをダウンロード", df.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="AI補完結果_統合版.csv", mime="text/csv")
+    st.session_state.result_df = df
+    st.session_state.error_df = pd.DataFrame(err_rows)
 
-    if err_rows:
-        df_err = pd.DataFrame(err_rows)
-        st.warning(f"⚠️ エラー行数: {len(err_rows)} 件")
-        st.download_button("⚠️ エラー行CSVをダウンロード", df_err.to_csv(index=False).encode("utf-8-sig"),
-                           file_name="AI補完エラー行.csv", mime="text/csv")
+# === 出力：セッションに保持されたデータからダウンロード
+if "result_df" in st.session_state:
+    st.download_button(
+        "📥 補完結果CSVをダウンロード",
+        st.session_state.result_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="AI補完結果_統合版.csv",
+        mime="text/csv"
+    )
+
+if "error_df" in st.session_state and not st.session_state.error_df.empty:
+    st.warning(f"⚠️ エラー行数: {len(st.session_state.error_df)} 件")
+    st.download_button(
+        "⚠️ エラー行CSVをダウンロード",
+        st.session_state.error_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="AI補完エラー行.csv",
+        mime="text/csv"
+    )
