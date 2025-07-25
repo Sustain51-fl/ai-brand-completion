@@ -248,9 +248,10 @@ if uploaded_file and "result_df" not in st.session_state:
 
         if brand in brand_dict:
             bcd, mcd, mmk = brand_dict[brand]
-            match_flag = "✅" if maker == mmk else "❌"
+            match_flag = "〇" if maker == mmk else "×"
+            mas_br = brand  # AIが出したブランドがマスタに存在しているので、それをマスタブランド名とする
         else:
-            bcd, mcd, mmk, match_flag = "", "", "", "（マスタなし）"
+            bcd, mcd, mmk, match_flag, mas_br = "", "", "", "（マスタなし）", ""
 
         b_list.append(brand)
         m_list.append(maker)
@@ -261,6 +262,8 @@ if uploaded_file and "result_df" not in st.session_state:
         mcd_list.append(mcd)
         mmk_list.append(mmk)
         match_flag_list.append(match_flag)
+        mas_br_list.append(mas_br)  # ★ 追加
+
     df["検索クエリ"] = q_list
     df["AI_ブランド"] = b_list
     df["AI_メーカー"] = m_list
@@ -269,6 +272,7 @@ if uploaded_file and "result_df" not in st.session_state:
     df["参照URL"] = u_list
     df["ブランドコード"] = bcd_list
     df["メーカーコード"] = mcd_list
+    df["マスタブランド名"] = mas_br_list    # ★ 追加
     df["マスタメーカー名"] = mmk_list
     df["ブランド⇄メーカー整合性"] = match_flag_list
 
@@ -301,8 +305,8 @@ if "error_df" in st.session_state and not st.session_state.error_df.empty:
 
 # === ログ表示・ダウンロード ===
 if st.session_state.logs:
-    st.markdown("### 🧾 処理ログ")
-    with st.expander("ログを表示"):
+    st.sidebar.markdown("### 🧾 処理ログ")
+    with st.sidebar.expander("ログを表示"):
         for line in st.session_state.logs:
             st.text(line)
 
@@ -310,8 +314,8 @@ if st.session_state.logs:
     with open(log_file_path, "w", encoding="utf-8") as f:
         f.write("\n".join(st.session_state.logs))
 
-    st.download_button(
-        "📝 ログファイルをダウンロード",
+    st.sidebar.download_button(
+        "📝 ログファイルをDL",
         data=open(log_file_path, "rb").read(),
         file_name=os.path.basename(log_file_path),
         mime="text/plain"
