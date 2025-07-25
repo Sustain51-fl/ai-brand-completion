@@ -146,13 +146,15 @@ if uploaded_exclude:
         else:
             st.sidebar.error(f"❌ 保存失敗: {resp}")
 
+
 # === サイドバー：ブランド・メーカーコード付きマスタ読込 ===
 st.sidebar.header("📚 コード付きマスタアップロード")
 uploaded_master = st.sidebar.file_uploader("ブランドマスタ（CSV）", type=["csv"])
-brand_dict = {}
+
 if uploaded_master:
     try:
         df_master = pd.read_csv(uploaded_master, dtype=str).fillna("")
+        brand_dict = {}
         valid_rows = 0
         for _, row in df_master.iterrows():
             brand = row.get("ブランド名", "").strip()
@@ -163,9 +165,21 @@ if uploaded_master:
             mkr = row.get("メーカー名", "").strip()
             brand_dict[brand] = (bcd, mcd, mkr)
             valid_rows += 1
+
+        st.session_state["brand_dict"] = brand_dict
+        st.session_state["uploaded_master"] = uploaded_master
         st.sidebar.success(f"✅ 読み込み成功（有効ブランド数: {valid_rows}）")
     except Exception as e:
         st.sidebar.error(f"❌ マスタ読み込みエラー: {e}")
+
+# === マスタ辞書のリセット（明示的に） ===
+if "brand_dict" in st.session_state and st.session_state["brand_dict"]:
+    if st.sidebar.button("🗑️ マスタをリセット"):
+        st.session_state.pop("uploaded_master", None)
+        st.session_state.pop("brand_dict", None)
+        st.sidebar.success("マスタ情報をリセットしました")
+        st.rerun()
+
 def get_safe(row, col):
     return row[col] if col in row and pd.notnull(row[col]) else ""
 
@@ -185,10 +199,11 @@ uploaded_file = st.file_uploader("📄 AI補完対象ファイル（CSV）", typ
 if st.button("🔄 リセット"):
     st.session_state.pop("result_df", None)
     st.session_state.pop("error_df", None)
-    st.experimental_rerun()
+    st.rerun()
 
 if uploaded_file and "result_df" not in st.session_state:
 
+    brand_dict = st.session_state.get("brand_dict", {})
     if not brand_dict:
         st.error("⚠️ ブランド・メーカーのマスタCSVをアップロードしてください。")
         st.stop()
