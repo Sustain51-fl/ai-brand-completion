@@ -303,13 +303,24 @@ if "error_df" in st.session_state and not st.session_state.error_df.empty:
         mime="text/csv"
     )
 
-# === ログ表示・ダウンロード ===
+# === サイドバーに処理ログを表示（フォント小・色分け） ===
 if st.session_state.logs:
     st.sidebar.markdown("### 🧾 処理ログ")
     with st.sidebar.expander("ログを表示"):
         for line in st.session_state.logs:
-            st.text(line)
+            if "❌" in line or "失敗" in line:
+                color = "red"
+            elif "〇" in line or "✅" in line:
+                color = "green"
+            else:
+                color = "black"
 
+            st.markdown(
+                f"<div style='font-size:12px; color:{color}; font-family:monospace'>{line}</div>",
+                unsafe_allow_html=True
+            )
+
+    # ログファイルを保存してDLリンクを表示
     log_file_path = create_temp_logfile()
     with open(log_file_path, "w", encoding="utf-8") as f:
         f.write("\n".join(st.session_state.logs))
